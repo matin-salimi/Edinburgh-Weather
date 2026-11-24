@@ -1,10 +1,18 @@
+# Python
 __pycache__/
 *.pyc
 .venv/
+venv/
+
+# macOS / editors
 .DS_Store
-# Large/regenerable artifacts (re-create with data.py and train.py)
+.vscode/
+
+# Large or regenerable artifacts (re-create with data.py and train.py)
 dataset/*.csv
 models/*.pth
 models/*.pkl
+
+# Run-specific outputs
 outputs/training_history_*.json
 outputs/forecast_log.csv

@@ -1,250 +1,161 @@
-# Edinburgh Weather Forecasting Using LSTM Neural Networks
+# Edinburgh 12-Hour Temperature Forecasting with LSTM
 
-## 1. Project Overview
+A PyTorch LSTM that reads the previous 72 hours of weather in Edinburgh, Scotland and forecasts the air temperature for the next 12 hours. The project is evaluated against several baselines, validated with an ablation study over multiple random seeds, and compared live against the numerical weather prediction (NWP) forecast from Open-Meteo.
 
-This project develops a deep learning model to forecast air temperature in Edinburgh, Scotland, using a Long Short-Term Memory (LSTM) neural network implemented with Python and PyTorch.
+![Live forecast comparison](figures/edinburgh_weather_forecast.png)
 
-The model uses the previous 72 hours of weather information to predict temperature values for the next 12 hours.
+*Example live run: recent data (grey), this project's LSTM forecast (orange) and the Open-Meteo NWP forecast (blue). Neither forecast was verified against observations at plotting time; every run is appended to `outputs/forecast_log.csv` so it can be verified later.*
 
-The main objective is to investigate how recurrent neural networks can learn temporal patterns in weather data and use them to generate short-term temperature forecasts.
+## Key results
 
-## 2. Project Objectives
+Evaluated on two full, unseen years (2024–2025, 17,533 test windows, all four seasons):
 
-- Collect historical hourly weather data for Edinburgh.
-- Preprocess and normalize the weather dataset.
-- Develop an LSTM-based neural network.
-- Train and validate the model using chronological data splits.
-- Evaluate forecasting performance using MAE and RMSE.
-- Compare LSTM performance against a simple persistence baseline.
-- Save the trained model and preprocessing scaler.
-- Generate new 12-hour temperature forecasts using recent weather data.
-
-## 3. Data Collection
-
-Historical weather data is collected using the Open-Meteo Historical Forecast API.
-
-**Location:** Edinburgh, Scotland, United Kingdom
-
-**Coordinates:**
-- Latitude: 55.9533
-- Longitude: -3.1883
-
-**Historical period:** 3 November 2024 – 3 November 2026
-
-**Temporal resolution:** Hourly
-
-The dataset contains the following six meteorological features:
-
-| Feature | Description |
-|---|---|
-| temperature_2m | Air temperature at 2 meters (°C) |
-| relative_humidity_2m | Relative humidity (%) |
-| precipitation | Precipitation (mm) |
-| wind_speed_10m | Wind speed at 10 meters (km/h) |
-| surface_pressure | Surface atmospheric pressure (hPa) |
-| cloud_cover | Cloud cover (%) |
-
-The collected dataset contains 17,544 hourly records.
-
-**Data quality checks:**
-- Missing values: 0
-- Duplicate timestamps: 0
-- Non-hourly intervals: 0
-
-Note: Open-Meteo historical forecast data is model-based weather data and should not be interpreted as direct measurements from a local weather station.
-
-## 4. Data Preprocessing
-
-The dataset is sorted chronologically and divided into three subsets:
-
-| Dataset | Percentage |
-|---|---:|
-| Training | 70% |
-| Validation | 15% |
-| Testing | 15% |
-
-A StandardScaler is used to normalize the input features.
-
-To prevent data leakage, the scaler is fitted exclusively on the training data. The same fitted scaler is then applied to the validation and test datasets.
-
-### Sliding Window Approach
-
-A sliding window technique is used to create the input-output sequences.
-
-- Input sequence: Previous 72 hours.
-- Number of input features: 6.
-- Prediction horizon: Next 12 hours.
-- Target variable: Temperature.
-
-Therefore, each input sample has a shape of (72, 6), while its corresponding target contains 12 future temperature values.
-
-The forecasting task is formulated as direct multi-step prediction rather than recursively predicting one hour at a time.
-
-## 5. LSTM Model Architecture
-
-The neural network is implemented using PyTorch.
-
-| Parameter | Value |
-|---|---:|
-| Input size | 6 |
-| Hidden size | 64 |
-| Number of LSTM layers | 2 |
-| Dropout | 0.2 |
-| Output size | 12 |
-| Batch size | 64 |
-| Learning rate | 0.001 |
-| Maximum epochs | 100 |
-| Optimizer | Adam |
-| Loss function | Mean Squared Error (MSE) |
-| Early stopping patience | 10 |
-
-The model processes the 72-hour input sequence and uses a fully connected layer to generate twelve future temperature predictions.
-
-## 6. Model Evaluation
-
-The trained model is evaluated using an independent test dataset.
-
-The following performance metrics are calculated:
-
-- **Mean Absolute Error (MAE):** Measures the average absolute difference between predicted and actual temperatures.
-- **Root Mean Squared Error (RMSE):** Measures the square root of the average squared prediction errors.
-
-### Experimental Results
-
-The LSTM model achieved the following results:
-
-| Evaluation Metric | Result |
-|---|---:|
-| Test samples | 2,621 |
-| MAE | 1.2353 °C |
-| RMSE | 1.6512 °C |
-
-### Baseline Comparison
-
-To evaluate the effectiveness of the LSTM model, its performance is compared against a Persistence Baseline.
-
-The baseline assumes that the temperature for all twelve future hours will remain equal to the last observed temperature.
-
-Both approaches are evaluated using the same test dataset.
-
-| Evaluation Metric | LSTM | Persistence Baseline |
+| Model | MAE (°C) | RMSE (°C) |
 |---|---:|---:|
-| MAE | 1.2353 °C | 2.3522 °C |
-| RMSE | 1.6512 °C | 3.1098 °C |
+| Climatology (month × hour) | 2.435 | 3.094 |
+| Persistence (last value) | 2.031 | 2.785 |
+| Seasonal persistence (24 h ago) | 1.965 | 2.602 |
+| Ridge regression (same inputs) | 1.042 | 1.443 |
+| **LSTM** (mean ± std, 5 seeds) | **0.956 ± 0.007** | **1.321 ± 0.010** |
 
-The LSTM model achieves approximately **47.5% lower MAE** than the persistence baseline.
+- The LSTM reduces MAE by about **53 %** versus persistence, but only about **8 %** versus a tuned linear model (Ridge) given the same inputs. The Ridge comparison is the fairer measure of what the neural network adds.
+- The advantage over Ridge grows with the forecast horizon (see below).
 
-These results demonstrate that the LSTM model learns useful temporal patterns from historical weather data and performs better than simply repeating the last observed temperature.
+## Data
 
-## 7. Real-Time Prediction
+- **Source:** ERA5 reanalysis via the [Open-Meteo Archive API](https://open-meteo.com/en/docs/historical-weather-api).
+- **Location:** Edinburgh (55.9533° N, 3.1883° W), hourly.
+- **Period:** 2015-01-01 to 2025-12-31 (96,432 hourly records, fixed dates for reproducibility).
+- **Variables:** temperature at 2 m, relative humidity, precipitation, wind speed at 10 m, surface pressure, cloud cover.
+- **Quality checks:** no missing values, no duplicate timestamps, strictly hourly spacing (enforced in code).
 
-After training, the model and scaler are saved and reused for subsequent predictions.
+## Method
 
-The prediction pipeline performs the following steps:
+**Split by calendar year (chronological):** training 2015–2022, validation 2023, test 2024–2025. The standard scaler is fitted on training data only. Input windows of the validation/test sets may look back into the previous split (as in real use), but all forecast targets lie strictly inside their own split.
 
-1. Retrieve recent hourly weather information from the Open-Meteo Forecast API.
-2. Select the latest 72 complete and consecutive hourly records.
-3. Normalize the input features using the previously saved scaler.
-4. Load the trained LSTM model.
-5. Predict temperatures for the next twelve hours.
-6. Convert normalized predictions back to degrees Celsius.
-7. Display the results using Edinburgh local time.
-8. Generate and save a temperature forecast chart.
+**Task:** direct multi-step forecasting. Input `(72, F)`, output 12 temperatures at once (not recursive).
 
-The model generates its own temperature predictions. It does not simply display the temperature forecasts supplied by the API.
+**Model:** 2-layer LSTM, 64 hidden units, dropout 0.2, linear head. Adam-family optimizer, MSE loss, early stopping (patience 10) on validation loss.
 
-The generated chart is saved in the `outputs/` directory.
+**Improvements over the plain LSTM** (evaluated individually in the ablation below):
 
-## 8. Project Structure
+1. **Cyclical time features:** `sin/cos` of hour-of-day and day-of-year, so the network knows the time of day and season.
+2. **Residual output:** the network predicts the *change* relative to the last observed temperature (implemented as a skip connection), which makes short horizons much easier.
+3. **Regularization:** AdamW weight decay, ReduceLROnPlateau and gradient clipping (no measurable effect, see below).
 
-```text
-Edinburgh-Weather/
-│
-├── main.py
-├── data.py
-├── model.py
-├── train.py
-├── evaluate.py
-├── predict.py
-├── README.md
-├── requirements.txt
-├── .gitignore
-│
-├── dataset/
-│   └── edinburgh_weather.csv
-│
-├── models/
-│   ├── edinburgh_lstm.pth
-│   └── edinburgh_scaler.pkl
-│
-└── outputs/
-    └── edinburgh_weather_forecast.png
-```
+**Baselines:** persistence, seasonal persistence (value 24 h earlier), climatology (training mean per month and hour), and Ridge regression on the flattened input window (receives the same features as the LSTM).
 
-## 9. Installation and Execution
+## Results
 
-### Requirements
+### Error by forecast horizon
 
-- Python
-- PyTorch
-- NumPy
-- Pandas
-- Scikit-learn
-- Requests
-- Joblib
-- Matplotlib
+![MAE by horizon](figures/error_by_horizon.png)
 
-Install the dependencies:
+Single run (seed 42), MAE in °C:
+
+| Horizon | Persistence | Ridge | LSTM |
+|---|---:|---:|---:|
+| h+1 | 0.485 | 0.310 | 0.313 |
+| h+3 | 1.244 | 0.724 | 0.666 |
+| h+6 | 2.121 | 1.101 | 0.990 |
+| h+12 | 2.938 | 1.441 | 1.371 |
+
+For the first hour the LSTM and Ridge are equivalent; the LSTM becomes clearly better from about h+3 onward.
+
+### Ablation study
+
+![Ablation](figures/ablation.png)
+
+Test MAE in °C, mean ± std over 5 seeds (42, 1, 2, 3, 4):
+
+| Configuration | MAE | h+1 MAE | h+12 MAE |
+|---|---:|---:|---:|
+| Baseline LSTM | 1.025 ± 0.002 | 0.395 ± 0.017 | 1.403 ± 0.008 |
+| + time features | 0.967 ± 0.011 | 0.397 ± 0.012 | 1.343 ± 0.014 |
+| + time features + residual output | **0.956 ± 0.007** | **0.312 ± 0.001** | 1.359 ± 0.014 |
+| + time features + residual + regularization | 0.956 ± 0.007 | 0.312 ± 0.001 | 1.359 ± 0.014 |
+
+Findings:
+
+- **Time features are the largest contributor** to overall accuracy (≈ 5.7 % lower MAE), mainly at longer horizons.
+- **The residual output mainly fixes the first hours:** h+1 MAE drops from 0.397 to 0.312 with very small seed variance. Its effect on overall MAE (0.967 → 0.956) is within about one standard deviation and should not be over-interpreted; h+12 is possibly slightly worse (also within noise).
+- **Regularization had no measurable effect.** With early stopping the best epoch occurs very early, before the learning-rate scheduler acts, and the weight decay (1e-4) is weak. Results are identical to the un-regularized model, so the final model omits it.
+- Residual output alone (1.032) and regularization alone (1.024) were run once with seed 42 only and are not distinguishable from the baseline.
+
+**Final model:** time features + residual output (`time_residual`).
+
+## Live forecast and comparison with Open-Meteo
+
+`predict.py` downloads the latest 72 complete hours, forecasts the next 12 with the trained LSTM and plots them together with the forecast that Open-Meteo itself publishes for the same hours. The chart shows the recent history, both forecasts, the shaded difference and the hourly gap.
+
+Open-Meteo's forecast is produced by NWP models that simulate the future state of the atmosphere, whereas the LSTM only sees the past 72 hours at one location. The comparison therefore shows how close a lightweight model gets to NWP, not whether it can replace it. Each run is appended to `outputs/forecast_log.csv` (timestamp, LSTM value, Open-Meteo value) so both can be scored against real observations later.
+
+## Reproducing the results
 
 ```bash
 pip install -r requirements.txt
+
+python3 data.py          # download ERA5 data (~11 API calls)
+python3 train.py         # train the final model (time_residual, seed 42)
+python3 evaluate.py      # metrics for all models -> outputs/metrics_time_residual.json
+python3 predict.py       # live forecast + comparison chart
 ```
 
-### Step 1: Collect Historical Data
+Ablation and multiple seeds (experiments: `baseline`, `time`, `residual`, `regularized`, `time_residual`, `full`):
 
 ```bash
-python3 data.py
+for e in baseline time residual regularized time_residual full; do
+  EXPERIMENT=$e python3 train.py && EXPERIMENT=$e python3 evaluate.py
+done
+
+for s in 1 2 3 4; do for e in baseline time time_residual full; do
+  SEED=$s EXPERIMENT=$e python3 train.py && SEED=$s EXPERIMENT=$e python3 evaluate.py
+done; done
+
+python3 compare_experiments.py   # single-seed comparison table
+python3 aggregate_seeds.py       # mean ± std over seeds
+python3 make_figures.py          # figures/error_by_horizon.png and figures/ablation.png
 ```
 
-### Step 2: Train the Model
+All settings (dates, split, features, hyperparameters, seed) live in `config.py`. Runs use fixed seeds; small numerical differences between devices (CPU / CUDA / Apple MPS) are possible.
 
-```bash
-python3 train.py
+## Project structure
+
+```text
+Edinburgh-Weather/
+├── config.py               # all paths, dates, hyperparameters, experiments
+├── data.py                 # ERA5 download, validation, windowing, split
+├── features.py             # feature engineering (shared by training and prediction)
+├── model.py                # LSTM with optional residual skip connection
+├── baselines.py            # persistence, seasonal, climatology, Ridge
+├── train.py                # training with early stopping
+├── evaluate.py             # metrics for LSTM and all baselines
+├── predict.py              # live forecast, Open-Meteo comparison, forecast log
+├── compare_experiments.py  # ablation table (single seed)
+├── aggregate_seeds.py      # mean ± std over seeds
+├── make_figures.py         # README figures
+├── utils.py                # seed, device, helpers
+├── requirements.txt
+├── dataset/                # downloaded data (git-ignored)
+├── models/                 # trained weights and scalers (git-ignored)
+├── outputs/                # metrics JSON files, training histories, forecast log
+└── figures/                # images used in this README
 ```
 
-### Step 3: Evaluate the Model
+## Limitations
 
-```bash
-python3 evaluate.py
-```
+- **Reanalysis, not station observations.** ERA5 is a model-assisted reconstruction on a coarse grid (tens of kilometres). The network learns ERA5 behaviour, which may differ from what a thermometer in Edinburgh reads.
+- **Train/inference data mismatch.** The model is trained on ERA5 but the live input comes from the Open-Meteo forecast API (its recent hours are model analysis data). The distributions are similar but not identical, so live performance may differ from the test results.
+- **Live forecasts are not yet verified.** The comparison with Open-Meteo is descriptive until enough entries in `forecast_log.csv` can be compared with observed temperatures.
+- **Single location, single variable target.** Only Edinburgh and only temperature are forecast.
+- **Test years are warmer than the training period** (the climatology baseline shows a −0.71 °C bias), which may slightly favour models that use the most recent observations.
+- **No formal significance test.** Seed variation (n = 5) is reported, but differences of roughly one standard deviation (e.g. the residual output's effect on overall MAE) are not claimed as significant.
+- **Early overfitting.** Validation loss reaches its minimum after only a few epochs; stronger regularization or architectural changes were not found to help in this study.
 
-### Step 4: Generate Temperature Predictions
+## Possible extensions
 
-```bash
-python3 predict.py
-```
-
-The trained model and scaler are reused during prediction, so retraining is not required for every forecast.
-
-## 10. Limitations and Future Improvements
-
-Although the model achieves promising test results, several improvements could be investigated:
-
-- Compare LSTM performance with GRU and other forecasting models.
-- Experiment with different sequence lengths and model hyperparameters.
-- Evaluate forecasting errors separately for each future prediction horizon.
-- Compare predictions against independent weather station observations.
-- Retrain the model periodically using newly available historical data.
-- Investigate the influence of seasonal weather patterns.
-
-## 11. Conclusion
-
-This project demonstrates the application of an LSTM neural network for short-term temperature forecasting in Edinburgh.
-
-Using six meteorological input features and a 72-hour historical observation window, the model predicts temperatures for the following twelve hours.
-
-The experimental results show an MAE of 1.2353 °C and an RMSE of 1.6512 °C on the test dataset.
-
-The LSTM model also outperforms the Persistence Baseline, achieving approximately 47.5% lower MAE.
-
-The project implements a reusable prediction pipeline that loads the saved model and scaler to generate new forecasts without requiring retraining for every execution.
+- Compare with GRU, temporal convolution and Transformer models.
+- Probabilistic forecasts (quantile regression) with calibration analysis.
+- Verify live forecasts against independent station observations (e.g. Met Office).
+- Statistical testing (Diebold–Mariano or bootstrap confidence intervals) and walk-forward validation.
+- Additional inputs such as wind direction components, dew point and radiation; multiple cities.

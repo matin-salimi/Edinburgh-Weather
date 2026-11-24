@@ -1,149 +1,124 @@
-
-import torch
-import numpy as np
 import joblib
+import numpy as np
+import torch
 
-from pathlib import Path
-from sklearn.metrics import mean_absolute_error, mean_squared_error
-
+from baselines import (
+    climatology,
+    persistence,
+    ridge_regression,
+    seasonal_persistence,
+)
+from config import EXPERIMENT, SEED, METRICS_PATH, MODEL_PATH, SCALER_PATH
 from data import prepare_datasets
 from model import WeatherLSTM
+from utils import get_device, save_json, to_celsius
+
+
+def regression_metrics(actual, predicted) -> dict:
+    error = predicted - actual
+
+    return {
+        "mae": float(np.mean(np.abs(error))),
+        "rmse": float(np.sqrt(np.mean(error ** 2))),
+        "bias": float(np.mean(error)),
+        "mae_per_horizon": np.mean(np.abs(error), axis=0).tolist(),
+    }
+
+
+def predict_in_batches(model, X, device, batch_size=1024):
+    outputs = []
+
+    with torch.no_grad():
+        for start in range(0, len(X), batch_size):
+            batch = torch.from_numpy(X[start:start + batch_size]).to(device)
+            outputs.append(model(batch).cpu().numpy())
+
+    return np.concatenate(outputs, axis=0)
 
 
 def evaluate_model():
-
-    project_dir = Path(__file__).resolve().parent
-    models_dir = project_dir / "models"
-
-    model_path = models_dir / "edinburgh_lstm.pth"
-    scaler_path = models_dir / "edinburgh_scaler.pkl"
-
-    if not model_path.exists():
-        raise FileNotFoundError("Trained model not found.")
-
-    # Load datasets and scaler
-    (
-        X_train,
-        y_train,
-        X_val,
-        y_val,
-        X_test,
-        y_test,
-        scaler
-    ) = prepare_datasets()
-
-    # Save scaler
-    joblib.dump(scaler, scaler_path)
-
-    # Select device
-    if torch.backends.mps.is_available():
-        device = torch.device("mps")
-    elif torch.cuda.is_available():
-        device = torch.device("cuda")
-    else:
-        device = torch.device("cpu")
-
-    # Load trained model
-    model = WeatherLSTM().to(device)
-
-    model.load_state_dict(
-        torch.load(
-            model_path,
-            map_location=device,
-            weights_only=True
+    if not MODEL_PATH.exists() or not SCALER_PATH.exists():
+        raise FileNotFoundError(
+            "Trained model or scaler not found. Run train.py first."
         )
-    )
 
+    datasets = prepare_datasets()
+    X_train, y_train = datasets["X_train"], datasets["y_train"]
+    X_test, y_test = datasets["X_test"], datasets["y_test"]
+
+    scaler = joblib.load(SCALER_PATH)
+    device = get_device()
+
+    model = WeatherLSTM().to(device)
+    model.load_state_dict(
+        torch.load(MODEL_PATH, map_location=device, weights_only=True)
+    )
     model.eval()
 
-    # Generate LSTM predictions
-    X_test_tensor = torch.from_numpy(X_test).to(device)
+    actual = to_celsius(y_test, scaler)
 
-    with torch.no_grad():
-        predictions = model(X_test_tensor)
+    predictions = {
+        "Persistence": persistence(X_test, scaler),
+        "Seasonal persistence (24h)": seasonal_persistence(X_test, scaler),
+        "Climatology (month x hour)": climatology(datasets["test_times"]),
+        "Ridge regression": ridge_regression(
+            X_train, y_train, X_test, scaler
+        ),
+        "LSTM": to_celsius(
+            predict_in_batches(model, X_test, device), scaler
+        ),
+    }
 
-    predictions = predictions.cpu().numpy()
+    results = {
+        "experiment": EXPERIMENT,
+        "seed": SEED,
+        "test_samples": int(len(X_test)),
+        "test_period": {
+            "first_forecast_start": str(datasets["test_times"].iloc[0]),
+            "last_forecast_start": str(datasets["test_times"].iloc[-1]),
+        },
+        "models": {
+            name: regression_metrics(actual, pred)
+            for name, pred in predictions.items()
+        },
+    }
 
-    # Convert normalized temperatures to Celsius
-    temperature_mean = scaler.mean_[0]
-    temperature_scale = scaler.scale_[0]
+    lstm_mae = results["models"]["LSTM"]["mae"]
+    results["lstm_mae_improvement_percent"] = {
+        name: float((1 - lstm_mae / m["mae"]) * 100)
+        for name, m in results["models"].items()
+        if name != "LSTM"
+    }
 
-    predictions_celsius = (
-        predictions * temperature_scale + temperature_mean
-    )
+    save_json(results, METRICS_PATH)
 
-    actual_celsius = (
-        y_test * temperature_scale + temperature_mean
-    )
-
-    # Calculate LSTM metrics
-    lstm_mae = mean_absolute_error(
-        actual_celsius.flatten(),
-        predictions_celsius.flatten()
-    )
-
-    lstm_rmse = np.sqrt(
-        mean_squared_error(
-            actual_celsius.flatten(),
-            predictions_celsius.flatten()
-        )
-    )
-
-    # ==========================================
-    # Persistence Baseline
-    # ==========================================
-
-    last_temperatures = (
-        X_test[:, -1, 0] * temperature_scale
-        + temperature_mean
-    )
-
-    baseline_predictions = np.repeat(
-        last_temperatures[:, np.newaxis],
-        y_test.shape[1],
-        axis=1
-    )
-
-    baseline_mae = mean_absolute_error(
-        actual_celsius.flatten(),
-        baseline_predictions.flatten()
-    )
-
-    baseline_rmse = np.sqrt(
-        mean_squared_error(
-            actual_celsius.flatten(),
-            baseline_predictions.flatten()
-        )
-    )
-
-    # ==========================================
-    # Results
-    # ==========================================
-
+    # ---------- Report ----------
     print("\n========== MODEL EVALUATION ==========")
+    print(f"Experiment: {EXPERIMENT}   Device: {device}   Test samples: {len(X_test)}\n")
 
-    print(f"Device: {device}")
-    print(f"Test Samples: {len(X_test)}")
+    print(f"{'Model':<30}{'MAE':>8}{'RMSE':>8}{'Bias':>8}")
+    for name, m in sorted(
+        results["models"].items(), key=lambda item: item[1]["mae"]
+    ):
+        print(
+            f"{name:<30}{m['mae']:>8.3f}{m['rmse']:>8.3f}{m['bias']:>+8.3f}"
+        )
 
-    print("\n--- LSTM Model ---")
-    print(f"MAE: {lstm_mae:.4f} °C")
-    print(f"RMSE: {lstm_rmse:.4f} °C")
+    print("\nLSTM MAE improvement vs each baseline:")
+    for name, pct in results["lstm_mae_improvement_percent"].items():
+        print(f"  {name:<30}{pct:>7.1f}%")
 
-    print("\n--- Persistence Baseline ---")
-    print(f"MAE: {baseline_mae:.4f} °C")
-    print(f"RMSE: {baseline_rmse:.4f} °C")
+    names = list(results["models"])
+    print("\nMAE by forecast horizon (°C):")
+    print(f"{'':<6}" + "".join(f"{n[:12]:>14}" for n in names))
+    for h in range(len(actual[0])):
+        row = "".join(
+            f"{results['models'][n]['mae_per_horizon'][h]:>14.3f}"
+            for n in names
+        )
+        print(f"h+{h + 1:<4}{row}")
 
-    print("\n--- Comparison ---")
-
-    if lstm_mae < baseline_mae:
-        print("LSTM performs better than Baseline (MAE).")
-    else:
-        print("Baseline performs better than LSTM (MAE).")
-
-    print("\nModel and scaler saved successfully.")
-
-    print(f"Model: {model_path}")
-    print(f"Scaler: {scaler_path}")
+    print(f"\nMetrics saved at: {METRICS_PATH}")
 
 
 if __name__ == "__main__":
