@@ -1,18 +1,10 @@
-
-# Python cache
 __pycache__/
-*.py[cod]
-
-# Virtual environments
-venv/
+*.pyc
 .venv/
-
-# IDE files
-.vscode/
-.idea/
-
-# macOS
 .DS_Store
-
-# Temporary files
-*.log
+# Large/regenerable artifacts (re-create with data.py and train.py)
+dataset/*.csv
+models/*.pth
+models/*.pkl
+outputs/training_history_*.json
+outputs/forecast_log.csv
